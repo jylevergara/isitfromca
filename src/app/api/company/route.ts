@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 
-
 // PDL API endpoint for company enrichment
 const PDL_API_ENDPOINT = 'https://api.peopledatalabs.com/v5/company/enrich';
 
