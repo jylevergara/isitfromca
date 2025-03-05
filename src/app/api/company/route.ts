@@ -4,7 +4,7 @@ import axios from 'axios';
 // PDL API endpoint for company enrichment
 const PDL_API_ENDPOINT = 'https://api.peopledatalabs.com/v5/company/enrich';
 
-
+export const runtime = 'edge';
 export async function POST(request: NextRequest) {
   try {
     // Get the API key from environment variables
