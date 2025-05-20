@@ -1,102 +1,145 @@
-import { NextRequest, NextResponse } from 'next/server';
-import axios from 'axios';
+// (GraphQL API endpoint using Yoga)
 
-// PDL API endpoint for company enrichment
-const PDL_API_ENDPOINT = 'https://api.peopledatalabs.com/v5/company/enrich';
+import { GraphQLContext, createContext } from "../../../graphql/context";
+import axios from "axios";
+import { createYoga, createSchema } from "graphql-yoga";
 
-export const runtime = 'edge';
-export async function POST(request: NextRequest) {
-  try {
-    // Get the API key from environment variables
-    const apiKey = process.env.PDL_API_URL;
+const PDL_API_ENDPOINT = "https://api.peopledatalabs.com/v5/company/enrich";
+
+export const typeDefs = `#graphql
+type CompanySearch {
+  id: ID!
+  searchedAt: String!
+  companyName: String!
+  displayName: String
+  website: String
+  industry: String
+  country: String
+  isFromUS: Boolean!
+  isFromCanada: Boolean!
+}
+
+type Query {
+  getCompanyInfo(companyName: String!): CompanySearch
+  recentSearches(limit: Int): [CompanySearch!]!
+}
+
+type Mutation {
+  searchAndAddCompany(companyName: String!): CompanySearch!
+}
+`;
+
+const resolvers = {
+  Mutation: {
+    async searchAndAddCompany(
+      _parent: any,
+      args: { companyName: string },
+      context: GraphQLContext
+    ) {
+      const { companyName } = args;
+
+      if (!companyName) {
+        throw new Error("Company name is required");
+      }
+
+try {
+    // Check if we already have this company in our database (case insensitive search)
+    const existingSearch = await context.prisma.companySearch.findFirst({
+      where: {
+        companyName: {
+          equals: companyName.trim(),
+          mode: 'insensitive'
+        }
+      },
+      orderBy: {
+        searchedAt: 'desc'
+      }
+    });
+
+    // If found in database, return it
+    if (existingSearch) {
+      console.log(`Found existing record for ${companyName}`);
+      return existingSearch;
+    }
+
+    console.log('existingSearch', existingSearch);
+
+    // Not found in database, fetch from PDL API
+    console.log(`No existing record found for ${companyName}, fetching from API`);
     
+    const apiKey = process.env.PDL_API_KEY;
+
     if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key not configured' },
-        { status: 500 }
-      );
+      throw new Error("API key not configured");
     }
 
-    // Get the company name from the request body
-    const { companyName } = await request.json();
-    
-    if (!companyName) {
-      return NextResponse.json(
-        { error: 'Company name is required' },
-        { status: 400 }
-      );
-    }
-
-    // Make request to People Data Labs API
     const response = await axios.get(PDL_API_ENDPOINT, {
       params: {
         name: companyName,
       },
       headers: {
-        'X-Api-Key': apiKey,
-        'Content-Type': 'application/json',
+        "X-Api-Key": apiKey,
+        "Content-Type": "application/json",
       },
     });
 
-    // Extract relevant data from the response
     const companyData = response.data;
+    console.log('companyData', companyData);
 
-    // Determine if the company is from the US, Canada, or elsewhere
-    let origin = 'Other';
     let isFromUS = false;
     let isFromCanada = false;
-    
-    // Check location data to determine origin
-    if (companyData.location?.country === 'united states') {
-      origin = 'United States';
+
+    // Check location data 
+    if (companyData.location?.country === "united states") {
       isFromUS = true;
-    } else if (companyData.location?.country === 'canada') {
-      origin = 'Canada';
+    } else if (companyData.location?.country === "canada") {
       isFromCanada = true;
     } else if (companyData.location) {
-      origin = companyData.location.country || 'unknown';
+      isFromCanada = false
+      isFromUS = false;
     }
 
-    // Format the response
-    const formattedResponse = {
-      display_name: companyData.display_name || companyName,
-      website: companyData.website,
-      location: companyData.location,
-      origin,
-      isFromUS,
-      isFromCanada,
-    };
+    const savedSearch = await context.prisma.companySearch.create({
+      data: {
+        companyName: companyName.trim(),
+        displayName: companyData.display_name || companyName.trim(),
+        website: companyData.website,
+        country: companyData.location?.country,
+        industry: companyData.industry,
+        isFromUS,
+        isFromCanada,
+      },
+    });
 
-    return NextResponse.json(formattedResponse);
-  } catch (error: unknown) {
-    const err = error as { 
-      response?: { 
-        status?: number; 
-        data?: unknown; 
-      }; 
-      message?: string;
-    };
-    
-    console.error('PDL API Error:', err.response?.data || err.message);
-    
+    return savedSearch;
+  } catch (error: any) {
+    console.error("PDL API Error:", error.response?.data || error.message);
+
     // Handle PDL API specific errors
-    if (err.response?.status === 404) {
-      return NextResponse.json(
-        { error: 'Company not found' },
-        { status: 404 }
-      );
+    if (error.response?.status === 404) {
+      throw new Error("Company not found");
     }
-    
-    if (err.response?.status === 401 || err.response?.status === 403) {
-      return NextResponse.json(
-        { error: 'API authentication error' },
-        { status: 401 }
-      );
+
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      throw new Error("API authentication error");
     }
-    
-    return NextResponse.json(
-      { error: 'Failed to fetch company data' },
-      { status: 500 }
-    );
+
+    throw new Error("Failed to fetch company data");
   }
-}
+    },
+  },
+};
+
+export const schema = createSchema({
+  typeDefs,
+  resolvers,
+});
+
+const { handleRequest } = createYoga({
+  schema,
+  context: createContext,
+  graphqlEndpoint: "/api/company",
+  fetchAPI: { Response },
+});
+
+export { handleRequest as GET, handleRequest as POST };
